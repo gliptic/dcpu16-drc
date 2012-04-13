@@ -1,0 +1,7 @@
+=======================
+===== DCPU-16 DRC =====
+=======================
+
+A simple dynamic recompiling VM, currently targeting x86-64.
+
+NOTE: Not yet fully working.

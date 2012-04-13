@@ -316,7 +316,7 @@ typedef char  i8;
 #define c_test8(modrm)  c_1b_modrm(X86_TEST8, modrm)
 
 #define c_retn() c_byte(X86_RETN)
-#define c_callrel(p) { c_byte(X86_CALLREL); c_dword((u8*)p - (LOC + 4)); }
+#define c_callrel(p) do { c_byte(X86_CALLREL); c_dword((u8*)p - (LOC + 4)); } while(0)
 
 #define c_push_q(r) do { u32 _r = (r); c_rex_for(0, _r, 0, 0); c_byte(0x50 + (_r&RMASK)); } while(0)
 #define c_pop_q(r) do { u32 _r = (r); c_rex_for(0, _r, 0, 0); c_byte(0x58 + (_r&RMASK)); } while(0)

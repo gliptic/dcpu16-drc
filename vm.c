@@ -97,9 +97,6 @@ void context_init(context* C) {
 		c_retn();
 		
 		C->common_code_end = LOC;
-		
-		// mov al, [rdi+rax+0x20000]
-		//   c_mov8(m_sib_d32(AL, R_CONTEXT, RM_RAX, SS_1, offsetof(context, blockmap)));
 	}
 }
 
@@ -123,51 +120,6 @@ void trace(context* C);
 	C->pc = pc; \
 } while(0)
 
-/* JIT life-cycle
-
-Trace a block
-
-1. Identify a set of instructions to compile (I-set).
-2. Compile them into a contiguous block of code.
-3. Store the entry-points to all instructions in the block.
-
-A block can have direct-jumps within itself, but not to other blocks.
-To go to another block, it must go via the codeloc table.
-
-Block invalidation:
-	A write has been done to an instruction that is part of a block.
-1. Invalidate the block by setting codeloc[x] = 0 and block[x] = 0 for all x part of the block.
-2. If the block being invalidated is the currently executed one,
-	exit the block.
-   Otherwise, continue as usual.
-
-Register assignment:
-DATA = esi
-CODELOC = edi
-PC = ebx
-CONTEXT = ebp
-
-update_c_state():
-mov [CONTEXT->pc], PC
-
-interp:
-
-
-invalidate_instr(offset = eax):
-mov [CODELOC + offset*4], 0
-// TODO: Free machine-code range
-update_c_state()
-jmp interp
-
-Write (dest = eax, value = ecx):
-mov [DATA + dest*2], value
-cmp [CODELOC + dest*4], 0
-je ok
-mov PC, <implicit PC>
-call invalidate_instr(dest)
-ok:
-*/
-
 void invalidate_block(context* C, int bindex) {
 	block* bl = C->blocks + bindex;
 	u16 iw;
@@ -179,6 +131,9 @@ void invalidate_block(context* C, int bindex) {
 	bl->data_beg = 0;
 	bl->data_end = 0;
 }
+
+// TODO: Need to keep track of the interval of blocks in use,
+// invalidating from the front when code is overwritten.
 
 void invalidate_code_range(context* C, u8* beg, u8* end) {
 	// Invalidate all blocks that have machine code in the given range
@@ -225,7 +180,7 @@ u16 instr_size(u16 instr) {
 	return 1 + val_size(AV(instr)) + val_size(BV(instr));
 }
 
-/*
+/* val_size:
 0x10-0x17
 0x1e, 0x1f
 
@@ -237,8 +192,6 @@ a~b + abcd
 
        1????
 except 11000..11101
-
-(x > 16 && x < 24) || x > 29
 */
 
 int requires_o(u16 instr) {
