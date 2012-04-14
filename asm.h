@@ -2,18 +2,18 @@
 #define ASM_H
 
 #include <stddef.h>
+#include <inttypes.h>
 
-typedef unsigned short u16;
-typedef unsigned int   u32;
-typedef unsigned char  u8;
-typedef short i16;
-typedef int   i32;
-typedef char  i8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint8_t  u8;
+typedef int16_t  i16;
+typedef int32_t  i32;
+typedef int8_t   i8;
 
 #define c_byte(b) *LOC++ = b
 #define c_word(b) do { *((u16*)LOC) = (b); LOC += 2; } while(0)
 #define c_dword(b) do { *((u32*)LOC) = (b); LOC += 4; } while(0)
-
 
 #define EAX  (0)
 #define ECX  (1)
@@ -105,12 +105,8 @@ typedef char  i8;
 
 // c_sib(SIBR_DISP, ...)
 #define SIBR_DISP (5)
-// c_sib(..., SIBINDEX_EBP, ...)
-#define SIBINDEX_EBP (5)
 
 #define SIBMOD_DISP32 (0)
-#define SIBMOD_EBP_DISP8 (1)
-#define SIBMOD_EBP_DISP32 (2)
 
 #define MOD_M    (0)
 #define MOD_MD8  (1)
@@ -169,6 +165,7 @@ typedef char  i8;
 #define c_check_index(index) do { assert(index != RSP); } while(0)
 
 // r, [b + x*...]
+// r, b
 #define c_rex_for(r, b, x, w) c_rex((r)>>3, (b)>>3, (x)>>3, w)
 
 #define c_wide() c_byte(REX(0, 0, 0, 1))
@@ -233,6 +230,11 @@ typedef char  i8;
 // r, [index*ss + d]
 #define c_modm_si_d32(r, index, ss, d) do { c_modrm(SIBMOD_DISP32, (r)&RMASK, RM_SIB); c_sib(SIBR_DISP, (index)&RMASK, ss); c_dword(d); } while(0)
 
+#define c_modexm_sib(base, index, ss) c_modm_sib(REXT, base, index, ss)
+#define c_modexm_sib_d8(base, index, ss, d) c_modm_sib_d8(REXT, base, index, ss, d)
+#define c_modexm_sib_d32(base, index, ss, d) c_modm_sib_d32(REXT, base, index, ss, d)
+#define c_modexm_si_d32(index, ss,d ) c_modm_si_d32(REXT, index, ss, d)
+
 #define c_modmq_sib(r, base, index, ss) c_modm_sib(r, base, index, ss)
 #define c_modmq_sib_d8(r, base, index, ss, d) c_modm_sib_d8(r, base, index, ss)
 #define c_modmq_sib_d32(r, base, index, ss, d) c_modm_sib_d32(r, base, index, ss)
@@ -247,6 +249,15 @@ typedef char  i8;
 #define c_rex_modmq_sib_d32(r, base, index, ss, d) c_rex_for(r, base, index, 1)
 #define c_rex_modmq_si_d32(r, index, ss, d) c_rex_for(r, 0, index, 1)
 
+#define c_rex_modexm_sib(base, index, ss) c_rex_for(0, base, index, 0)
+#define c_rex_modexm_sib_d8(base, index, ss, d) c_rex_for(0, base, index, 0)
+#define c_rex_modexm_sib_d32(base, index, ss, d) c_rex_for(0, base, index, 0)
+#define c_rex_modexm_si_d32(index, ss, d) c_rex_for(0, 0, index, 0)
+#define c_rex_modexmq_sib(base, index, ss) c_rex_for(0, base, index, 1)
+#define c_rex_modexmq_sib_d8(base, index, ss, d) c_rex_for(0, base, index, 1)
+#define c_rex_modexmq_sib_d32(base, index, ss, d) c_rex_for(0, base, index, 1)
+#define c_rex_modexmq_si_d32(index, ss, d) c_rex_for(0, 0, index, 1)
+
 #define c_adsize() c_byte(0x67)
 #define c_opsize() c_byte(0x66)
 
@@ -254,13 +265,9 @@ typedef char  i8;
 
 // _r: reverse (destination is memory)
 // _k: literal
-/*
-#define c_movzx_w(modrm) { c_word(0xB70F); modrm; }
-*/
 #define c_movzx_b(modrm) do { c_rex_mod##modrm; c_word(0xB60F); c_mod##modrm; } while(0)
 #define c_movzx_w(modrm) do { c_rex_mod##modrm; c_word(0xB70F); c_mod##modrm; } while(0)
 
-//#define c_1b_modrm(b, modrm) { c_byte(b); modrm; }
 #define c_1b_modrm(b, modrm) do { c_rex_mod##modrm; c_byte(b); c_mod##modrm; } while(0)
 
 #define c_mov(modrm)      c_1b_modrm(X86_MOV, modrm)
@@ -323,8 +330,10 @@ typedef char  i8;
 
 #define c_mov_k(r, k) do { u32 _r = (r); c_rex_for(0, _r, 0, 0); c_byte(0xB8 + (_r&RMASK)); c_dword(k); } while(0)
 
-#define c_add8_k(modrm, k8) do { u32 REXT = 0; c_rex_modex##modrm; c_byte(0x83); c_modex##modrm; c_byte(k8); } while(0)
-#define c_or8_k(modrm, k8) do { u32 REXT = 1; c_rex_modex##modrm; c_byte(0x83); c_modex##modrm; c_byte(k8); } while(0)
+#define c_add_k8(modrm, k8) do { u32 REXT = 0; c_rex_modex##modrm; c_byte(0x83); c_modex##modrm; c_byte(k8); } while(0)
+#define c_or_k8(modrm, k8) do { u32 REXT = 1; c_rex_modex##modrm; c_byte(0x83); c_modex##modrm; c_byte(k8); } while(0)
+
+#define c_cmp8_k(modrm, k8) do { u32 REXT = 7; c_rex_modex##modrm; c_byte(0x80); c_modex##modrm; c_byte(k8); } while(0)
 
 #define c_add16_k(modrm, k16) do { u32 REXT = 0; c_op16(); c_rex_modex##modrm; c_byte(0x81); c_modex##modrm; c_word(k16); } while(0)
 #define c_sub16_k(modrm, k16) do { u32 REXT = 5; c_op16(); c_rex_modex##modrm; c_byte(0x81); c_modex##modrm; c_word(k16); } while(0)

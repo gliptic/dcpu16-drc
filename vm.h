@@ -17,7 +17,7 @@ typedef struct context {
 	u16 codeloc[1<<16];
 
 	block blocks[MAX_BLOCKS];
-	int next_block; // = 1
+	int first_used_block, num_used_blocks;
 	
 	u8* common_code;
 	u8* common_code_end;
@@ -30,7 +30,7 @@ typedef struct context {
 	u16 pc, sp, o;
 	
 	u8 *proc_indirect_jump, *proc_indirect_skipjump,
-	   *proc_indirect_jump_c;
+	   *proc_indirect_jump_c, *proc_invalidate;
 } context;
 
 void context_init(context* C);

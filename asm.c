@@ -17,9 +17,7 @@ void* mcode_alloc(size_t sz, int prot) {
 	return p;
 }
 
-
 #else
-
 
 #include <sys/mman.h>
 
