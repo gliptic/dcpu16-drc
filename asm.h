@@ -173,7 +173,7 @@ typedef int8_t   i8;
 // For mod != MOD_R, rm cannot be ESP/RSP (RM_SIB replaces ESP/RSP)
 #define c_modrm(mod, r, rm) c_byte(((mod)<<6)+((r)<<3)+(rm))
 // index uses register constants
-#define c_sib(r, index, ss) c_byte(((ss)<<6)+((index)<<3)+(r))
+#define c_sib(base, index, ss) c_byte(((ss)<<6)+((index)<<3)+(base))
 
 #define c_modm(r, rm)         c_modrm(MOD_M, (r)&RMASK, (rm)&RMASK)
 #define c_modr(rd, rs)        c_modrm(MOD_R, (rd)&RMASK, (rs)&RMASK)
@@ -184,14 +184,14 @@ typedef int8_t   i8;
 #define c_modmq_d8(r, rm, d)  c_modm_d8(r, rm, d)
 #define c_modmq_d32(r, rm, d) c_modm_d32(r, rm, d)
 
-#define c_modexm(rm)         c_modrm(MOD_M, REXT, (rm)&RMASK)
-#define c_modexr(rs)         c_modrm(MOD_R, REXT, (rs)&RMASK)
-#define c_modexm_d8(rm, d)   do { c_modrm(MOD_MD8, REXT, (rm)&RMASK); c_byte(d); } while(0)
-#define c_modexm_d32(rm, d)  do { c_modrm(MOD_MD32, REXT, (rm)&RMASK); c_dword(d); } while(0)
-#define c_modexmq(rm)        c_modm(REXT, rm)
-#define c_modexrq(rs)        c_modr(REXT, rs)
-#define c_modexmq_d8(rm, d)  c_modm_d8(REXT, rm, d)
-#define c_modexmq_d32(rm, d) c_modm_d32(REXT, rm, d)
+#define c_modexm(rm)         c_modm(REXT, rm)
+#define c_modexr(rs)         c_modr(REXT, rs)
+#define c_modexm_d8(rm, d)   c_modm_d8(REXT, rm, d)
+#define c_modexm_d32(rm, d)  c_modm_d32(REXT, rm, d)
+#define c_modexmq(rm)        c_modmq(REXT, rm)
+#define c_modexrq(rs)        c_modrq(REXT, rs)
+#define c_modexmq_d8(rm, d)  c_modmq_d8(REXT, rm, d)
+#define c_modexmq_d32(rm, d) c_modmq_d32(REXT, rm, d)
 
 #define c_rex_modm(r, rm)         c_rex_for(r, rm, 0, 0)
 #define c_rex_modr(rd, rs)        c_rex_for(rd, rs, 0, 0)
@@ -337,7 +337,7 @@ typedef int8_t   i8;
 
 #define c_add16_k(modrm, k16) do { u32 REXT = 0; c_op16(); c_rex_modex##modrm; c_byte(0x81); c_modex##modrm; c_word(k16); } while(0)
 #define c_sub16_k(modrm, k16) do { u32 REXT = 5; c_op16(); c_rex_modex##modrm; c_byte(0x81); c_modex##modrm; c_word(k16); } while(0)
-
+#define c_cmp16_k(modrm, k16) do { u32 REXT = 7; c_op16(); c_rex_modex##modrm; c_byte(0x81); c_modex##modrm; c_word(k16); } while(0)
 #define c_mov16_k(modrm, k16) do { u32 REXT = 0; c_op16(); c_rex_modex##modrm; c_byte(0xC7); c_modex##modrm; c_word(k16); } while(0)
 
 #define c_inc16(modrm) do { u32 REXT = 0; c_op16(); c_rex_modex##modrm; c_byte(0xFF); c_modex##modrm; } while(0)

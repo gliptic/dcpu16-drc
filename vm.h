@@ -38,7 +38,7 @@ void context_init(context* C);
 #define CODE_CACHE_SIZE (65536)
 #define CODE_CACHE_REDLINE (1024)
 
-#define OP_EX  (0)
+#define OP_EXT (0)
 #define OP_SET (1)
 #define OP_ADD (2)
 #define OP_SUB (3)
@@ -54,6 +54,8 @@ void context_init(context* C);
 #define OP_IFN (13)
 #define OP_IFG (14)
 #define OP_IFB (15)
+
+#define OP_EXT_JSR (1)
 
 #define VAL_POP    (0x18)
 #define VAL_PEEK   (0x19)

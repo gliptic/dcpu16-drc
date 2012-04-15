@@ -10,9 +10,10 @@ enum {
 	T_SP = VAL_SP,
 	T_PC = VAL_PC,
 	T_O = VAL_O,
+	T_JSR,
 	
 	T_IDENT, T_INT,	T_COMMA, T_PLUS,
-	T_LBRACKET,	T_RBRACKET,
+	T_LBRACKET, T_RBRACKET,
 	T_COLON, T_NL,
 	
 	T_A, T_B, T_C,
@@ -82,7 +83,9 @@ repeat:
 						case KW3('S','E','T'): P->token = OP_SET; break;
 						case KW3('A','D','D'): P->token = OP_ADD; break;
 						case KW3('S','U','B'): P->token = OP_SUB; break;
-						
+						case KW3('J','S','R'): P->token = T_JSR; break;
+						case KW3('I','F','E'): P->token = OP_IFE; break;
+						case KW3('I','F','G'): P->token = OP_IFG; break;
 						case KW4('P','U','S','H'): P->token = T_PUSH; break;
 						case KW4('P','E','E','K'): P->token = T_PEEK; break;
 						case KW3('P','O','P'): P->token = T_POP; break;
@@ -115,8 +118,6 @@ repeat:
 			}
 		}
 	}
-	
-	printf("TOKEN: %d, DATA: %d\n", P->token, P->tok_int_data);
 }
 
 #define W16(w) { *P->dest++ = (w); }
@@ -202,7 +203,7 @@ static u16 r_operand(parser* P) {
 }
 
 void r_file(parser* P) {
-	while(P->token < 16 || P->token == T_NL || P->token == T_COLON) {
+	while(P->token < 16 || P->token == T_NL || P->token == T_COLON || P->token == T_JSR) {
 		if(P->token < 16) {
 			// Instruction
 			u16* first = P->dest++;
@@ -214,10 +215,17 @@ void r_file(parser* P) {
 			expect(P, T_COMMA);
 			instr |= r_operand(P) << 10;
 			
-			printf("Instr: %d\n", instr & 0xf);
+			*first = instr;
+		} else if(P->token == T_JSR) {
+			u16* first = P->dest++;
+			u16 instr = (OP_EXT_JSR << 4);
+			
+			lex(P);
+			
+			instr |= r_operand(P) << 10;
 			
 			*first = instr;
-		} else if (P->token == T_NL) {
+		} else if(P->token == T_NL) {
 			// Ignore
 			lex(P);
 		} else {

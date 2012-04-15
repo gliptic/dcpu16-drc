@@ -14,7 +14,7 @@ void invalidate_block(context* C, int bindex);
 void trace(context* C);
 
 u8* load_context_state(u8* LOC) {
-	c_movzx_w(m_si_d32(R_SP, R_CONTEXT, SS_1, offsetof(context, pc)));
+	c_movzx_w(m_si_d32(R_SP, R_CONTEXT, SS_1, offsetof(context, sp)));
 	c_movzx_w(m_si_d32(R_O, R_CONTEXT, SS_1, offsetof(context, o)));
 	
 	c_movzx_w(m_d32(R_A, R_CONTEXT, offsetof(context, regs) + 0));
@@ -38,7 +38,7 @@ u8* load_context_state(u8* LOC) {
 
 
 u8* save_context_state(u8* LOC) {
-	c_mov16_r(m_si_d32(R_SP, R_CONTEXT, SS_1, offsetof(context, pc)));
+	c_mov16_r(m_si_d32(R_SP, R_CONTEXT, SS_1, offsetof(context, sp)));
 	c_mov16_r(m_si_d32(R_O, R_CONTEXT, SS_1, offsetof(context, o)));
 	
 	c_mov16_r(m_d32(R_A, R_CONTEXT, offsetof(context, regs) + 0));
@@ -143,7 +143,7 @@ void context_init(context* C) {
 		c_push_q(RCX);
 		c_push_q(R_CONTEXT);
 		c_callrel(invalidate_block);
-		c_wide(); c_add_k8(r(RSP), 16);
+		c_add_k8(rq(RSP), 16);
 
 		LOC = load_context_state(LOC);
 		c_jmp(C->proc_indirect_jump);
@@ -229,7 +229,7 @@ u16 val_size(u16 val) {
 }
 
 u16 instr_size(u16 instr) {
-	return 1 + val_size(AV(instr)) + val_size(BV(instr));
+	return 1 + (OP(instr) == OP_EXT ? 0 : val_size(AV(instr))) + val_size(BV(instr));
 }
 
 /* val_size:
@@ -247,7 +247,9 @@ except 11000..11101
 */
 
 int requires_o(u16 instr) {
-	return AV(instr) == VAL_O || BV(instr) == VAL_O || !OP_SETS_O(OP(instr));
+	return (OP(instr) != OP_EXT && AV(instr) == VAL_O)
+	     || BV(instr) == VAL_O
+	     || !OP_SETS_O(OP(instr));
 }
 
 // Machine values
@@ -269,6 +271,8 @@ char const* reg_names[16] = {
 #define MV_IS_REG(mv) ((mv)&(1<<24))
 
 #define MV(mode, reg, offset) (((mode)<<24)+((reg)<<16)+(offset))
+
+#define MV2_IS_IMM(mv1, mv2) (((mv1)|(mv2))<(MV_REG<<24))
 
 #define MV_M(v) ((v)>>24)
 #define MV_R(v) (((v)>>16)&0xff)
@@ -303,7 +307,9 @@ void print_mvalues(mvalue mvalue0, mvalue mvalue1, mvalue mvalue2) {
 		c_add16_k(r(i), C->data[pc]); \
 		mvd = mv = MV(MV_REGIND, i, 0); \
 		++pc; \
-	} else if(v >= 0x20) { mvd = mv = MV(MV_IMM, 0, v - 0x20); } \
+	} else if(v >= 0x20) { \
+		mvd = mv = MV(MV_IMM, 0, v - 0x20); \
+	} \
 	else { \
 		switch(v) { \
 			case VAL_PC: { \
@@ -314,8 +320,8 @@ void print_mvalues(mvalue mvalue0, mvalue mvalue1, mvalue mvalue2) {
 			case VAL_SP: { \
 				mvd = MV(MV_REG, R_SP, 0); \
 				if(i == 0 && vb == VAL_PUSH) { \
-					c_mov(r(EAX, R_SP)); \
-					mv = MV(MV_REG, AX, 0); \
+					c_mov(r(EDX, R_SP)); \
+					mv = MV(MV_REG, DX, 0); \
 				} else { \
 					mv = mvd; \
 				} \
@@ -332,8 +338,8 @@ void print_mvalues(mvalue mvalue0, mvalue mvalue1, mvalue mvalue2) {
 			} \
 			case VAL_PEEK: { \
 				if(i == 0 && vb == VAL_PUSH) { \
-					c_mov(r(EAX, R_SP)); \
-					mvd = mv = MV(MV_REGIND, RAX, 0); \
+					c_mov(r(EDX, R_SP)); \
+					mvd = mv = MV(MV_REGIND, RDX, 0); \
 				} else { \
 					mvd = mv = MV(MV_REGIND, R_SP, 0); \
 				} \
@@ -414,21 +420,39 @@ void print_mvalues(mvalue mvalue0, mvalue mvalue1, mvalue mvalue2) {
 	} \
 } while(0)
 
+static u8* memory_guard(context* C, u8* LOC, i32 pc, mvalue mv) {
+	if(MV_IS_MEM(mv)) {
+		u8* L;
+		if(MV_M(mv) == MV_REGIND) {
+			c_mov8(m_sib_d32(CL,
+				R_CONTEXT, MV_R(mv), SS_1, offsetof(context, blockmap)));
+		} else {	
+
+			c_mov8(m_d32(CL,
+				R_CONTEXT, MV_O(mv) + offsetof(context, blockmap)));
+		}
+		c_test8(r(CL, CL));
+		if(pc >= 0) c_mov_k(EAX, pc);
+		c_jcnd_far(JCND_JNZ, C->proc_invalidate);
+	}
+
+	return LOC;
+}
+
 void trace(context* C) {
 	u16 pc = C->pc;
 	u16 iw, data_beg;
 	u8* LOC;
 	u8* code_beg;
 	skipslot sslot;
-	int has_skipslot = 0, require_prolog = 1;
+	int has_skipslot = 0;
 	
 	int bindex = 1 + (C->first_used_block + C->num_used_blocks) % 255;
 	block* bl = C->blocks + bindex;
 
 	if(C->num_used_blocks == 255) {
 		invalidate_block(C, bindex);
-	} else {
-		++C->num_used_blocks;
+		--C->num_used_blocks;
 	}
 
 	LOC = C->code_cache_cur;
@@ -444,9 +468,8 @@ void trace(context* C) {
 		u32 va, vb;
 		mvalue mvalue0, mvalue1, mvalue2;
 		u16 next_pc;
+		u8* skipjump;
 		int last_instr, need_o, delayed_sp_dec = 0;
-		
-		require_prolog = 1;
 		
 		instr = C->data[pc];
 		next_pc = pc + instr_size(instr);
@@ -459,63 +482,104 @@ void trace(context* C) {
 		// TODO: If instr is a known jump into the same block (so that last_instr == 0), check whether the actual destination
 		// requires_o.
 		
-		printf("OP: %d, instr_size = %d\n", op, instr_size(instr));
+		printf("<%d> OP: %d, instr_size = %d\n", pc, op, instr_size(instr));
 		
 		C->codeloc[pc] = LOC - C->code_cache;
 
 		++pc;
 		
-		READ_VALUE(0, va);
-		READ_VALUE(1, vb);
-				
-		if(mvalue0 != mvalue2 && MV_IS_MEM(mvalue0) && MV_IS_MEM(mvalue2)) {
-			// We need to move from some register to put the value
-			// in place. Best to allocate mvalue0 to a register.
-			mvalue dest = MV(MV_REG, AX, 0);
-			c_mov16(mv(dest, mvalue0));
-			mvalue0 = dest;
-		} else if(MV_IS_MEM(mvalue0) && MV_IS_MEM(mvalue1)) {
-			// Move mvalue1 to R1
-			mvalue dest = MV(MV_REG, CX, 0);
-			c_mov16(mv(dest, mvalue1));
-			mvalue1 = dest;
+		if(op != OP_EXT) {
+			READ_VALUE(0, va);
+		} else {
+			mvalue0 = mvalue2 = MV(MV_IMM, 0, 0);
 		}
-		
-		if(MV_M(mvalue0) == MV_IMM && MV_M(mvalue1) != MV_IMM) {
-			if(MV_M(mvalue2) == MV_REG) {
-				// Use same register as destination
-				c_mov16_k_adapt(mvalue2, MV_O_IMM(mvalue0));
-				mvalue0 = mvalue2;
-			} else {
-				mvalue dest = MV(MV_REG, AX, 0);
-				c_mov16_k_adapt(dest, MV_O_IMM(mvalue0));
-				mvalue0 = dest;
+		READ_VALUE(1, vb);
+
+		if(op == OP_EXT) {
+			// Ignore mvalue0 and mvalue2		
+		} else if(op == OP_SET) {
+			// Ignore mvalue0
+			if(MV_IS_MEM(mvalue2) && MV_IS_MEM(mvalue1)) {
+				// Move mvalue1 to R1
+				mvalue dest = MV(MV_REG, CX, 0);
+				c_mov16(mv(dest, mvalue1));
+				mvalue1 = dest;
+			}
+		} else {
+			if(MV_IS_MEM(mvalue0) && MV_IS_MEM(mvalue1)) {
+				// Move mvalue1 to R1
+				mvalue dest = MV(MV_REG, CX, 0);
+				c_mov16(mv(dest, mvalue1));
+				mvalue1 = dest;
+			}
+			
+			if(MV_M(mvalue0) == MV_IMM && MV_M(mvalue1) != MV_IMM) {
+				if(MV_M(mvalue2) == MV_REG) {
+					// Use same register as destination
+					c_mov16_k_adapt(mvalue2, MV_O_IMM(mvalue0));
+					mvalue0 = mvalue2;
+				} else {
+					mvalue dest = MV(MV_REG, AX, 0);
+					c_mov16_k_adapt(dest, MV_O_IMM(mvalue0));
+					mvalue0 = dest;
+				}
 			}
 		}
 		
 		// Determine if this should be the last instruction in this block
-		last_instr = (va == VAL_PC && !has_skipslot) || (LOC >= C->code_cache_end) || (C->codeloc[next_pc] != 0);
-		need_o = last_instr || OP_IS_IF(op) || requires_o(next_instr);
+		/*
+		last_instr = (mvalue2 == MV(MV_REG, R_PC, 0) && !has_skipslot)
+		        || (LOC >= C->code_cache_end)
+			|| (C->codeloc[next_pc] != 0);*/
 		
+		last_instr = C->data[next_pc] == 0;
+		need_o = (mvalue2 == MV(MV_REG, R_PC, 0)) || requires_o(C->data[next_pc]);
+
 		print_mvalues(mvalue0, mvalue1, mvalue2);
 				
 		// Do op
 		switch(op) {
-			/*
-			case OP_SET: {
-				// c_mov16(r(reg[0], reg[1]));
+			case OP_EXT: {
+				if(va == OP_EXT_JSR) {
+					mvalue mv = MV(MV_REGIND, R_SP, 0);
+					c_dec16(r(R_SP));
+					c_mov16_k_adapt(mv, pc);
+					mvalue0 = mvalue1;
+					mvalue2 = MV(MV_REG, R_PC, 0);
+				}
 				break;
+			}
+			case OP_SET: {
+				mvalue0 = mvalue1;
+				break; // Let store logic do the work
 			}
 			
 			case OP_ADD: {
-				if(need_o) c_xor16(r(R_O, R_O));
-				// c_add16(r(reg[0], reg[1]));
-				if(need_o) c_adc16(r(R_O, R_O));
+				if(MV2_IS_IMM(mvalue0, mvalue1)) {
+					mvalue res = (mvalue0 + mvalue1) & 0xffff;
+					if(need_o) {
+						c_mov16_k_adapt(
+							MV(MV_REG, R_O, 0),
+							res > mvalue0 ? 1 : 0);
+					}
+					mvalue0 = res;
+				} else {
+					if(need_o) c_xor(r(R_O, R_O));
+					
+					if(MV_M(mvalue1) == MV_IMM)
+						c_add16_k(mv(mvalue0), MV_O_IMM(mvalue1));
+					else if(MV_IS_MEM(mvalue0))
+						c_add16_r(mv(mvalue1, mvalue0));
+					else
+						c_add16(mv(mvalue0, mvalue1));
+					
+					if(need_o) c_adc(r(R_O, R_O));
+				}
 				break;
-			}*/
+			}
 			
 			case OP_SUB: {
-				if(MV_M(mvalue0) == MV_IMM && MV_M(mvalue1) == MV_IMM) {
+				if(MV2_IS_IMM(mvalue0, mvalue1)) {
 					mvalue res = (mvalue0 - mvalue1) & 0xffff;
 					if(need_o) {
 						c_mov16_k_adapt(
@@ -524,8 +588,6 @@ void trace(context* C) {
 					}
 					mvalue0 = res;
 				} else {
-					if(need_o) c_xor(r(R_O, R_O));
-
 					if(MV_M(mvalue1) == MV_IMM)
 						c_sub16_k(mv(mvalue0), MV_O_IMM(mvalue1));
 					else if(MV_IS_MEM(mvalue0))
@@ -533,8 +595,32 @@ void trace(context* C) {
 					else
 						c_sub16(mv(mvalue0, mvalue1));
 					
-					if(need_o) c_sbb16(r(R_O, R_O));
+					if(need_o) c_sbb(r(R_O, R_O)); // Top half of R_O doesn't matter
 				}
+				break;
+			}
+
+			case OP_IFG: {
+				// TODO: When both are MV_IMM
+				if(MV_M(mvalue1) == MV_IMM)
+					c_cmp16_k(mv(mvalue0), MV_O_IMM(mvalue1));
+				else if(MV_IS_MEM(mvalue0))
+					c_cmp16_r(mv(mvalue1, mvalue0));
+				else
+					c_cmp16(mv(mvalue0, mvalue1));
+
+				c_jcnd_far(JCND_JBE, 0);
+				skipjump = LOC;
+				break;
+			}
+
+			case OP_IFE: {
+				if(MV_IS_MEM(mvalue0))
+					c_cmp16_r(mv(mvalue1, mvalue0));
+				else
+					c_cmp16(mv(mvalue0, mvalue1));
+				c_jcnd_far(JCND_JNZ, 0);
+				skipjump = LOC;
 				break;
 			}
 			
@@ -547,50 +633,42 @@ void trace(context* C) {
 			c_dec16(r(R_SP));
 		}
 		
+		if(op == OP_EXT && va == OP_EXT_JSR) {
+			LOC = memory_guard(C, LOC, pc, MV(MV_REGIND, R_SP, 0));
+		}
+		
 		// Direct jump if destination is known to be a valid
 		// instruction in this block.
-		
-		if(va == VAL_PC
+
+		if(mvalue2 == MV(MV_REG, R_PC, 0)
 		&& MV_M(mvalue0) == MV_IMM
 		&& C->codeloc[MV_O_IMM(mvalue0)]
 		&& MV_O_IMM(mvalue0) >= data_beg
 		&& MV_O_IMM(mvalue0) < pc) {
 			mvalue2 = mvalue0;
-			c_jmp(C->code_cache + C->codeloc[MV_O_IMM(mvalue0)]);
-			require_prolog = 0;
+			c_jmp(C->code_cache + C->codeloc[MV_O_IMM(mvalue2)]);
 		}
 		
 		// TODO: We can use 32-bit move between registers
-			
-		if(mvalue2 != mvalue0
-		&& MV_M(mvalue2) != MV_IMM) {
-			if(MV_M(mvalue0) == MV_IMM)
-				c_mov16_k_adapt(mvalue2, MV_O_IMM(mvalue0));
-			else if(MV_IS_MEM(mvalue2))
-				c_mov16_r(mv(mvalue0, mvalue2));
-			else
-				c_mov16(mv(mvalue2, mvalue0));
+	
+		if(!OP_IS_IF(op)) {
+			if(mvalue2 != mvalue0
+			&& MV_M(mvalue2) != MV_IMM) {
+				if(MV_M(mvalue0) == MV_IMM)
+					c_mov16_k_adapt(mvalue2, MV_O_IMM(mvalue0));
+				else if(MV_IS_MEM(mvalue2))
+					c_mov16_r(mv(mvalue0, mvalue2));
+				else
+					c_mov16(mv(mvalue2, mvalue0));
+			}
+
+			LOC = memory_guard(C, LOC, pc, mvalue2);
+		}
+		
+		if(mvalue2 == MV(MV_REG, R_PC, 0)) {
+			c_jmp(C->proc_indirect_jump);
 		}
 
-		if(MV_IS_MEM(mvalue2)) {
-			u8* L;
-			if(MV_M(mvalue2) == MV_REGIND) {
-				c_mov8(m_sib_d32(CL,
-					R_CONTEXT, MV_R(mvalue2), SS_1, offsetof(context, blockmap)));
-			} else {
-				c_mov8(m_d32(CL,
-					R_CONTEXT, MV_O(mvalue2) + offsetof(context, blockmap)));
-			}
-			c_test8(r(CL, CL));
-			c_mov_k(EAX, pc);
-			c_jcnd_far(JCND_JNZ, C->proc_invalidate);
-		}
-		
-		if(va == VAL_PC && MV_M(mvalue2) != MV_IMM) {
-			c_jmp(C->proc_indirect_jump);
-			require_prolog = 0;
-		}
-		
 		// After instruction
 		if(has_skipslot) {
 			// Patch sslot.codeloc with offset to current
@@ -601,17 +679,14 @@ void trace(context* C) {
 
 		if(OP_IS_IF(op)) {
 			has_skipslot = 1;
-			sslot.codeloc = (u32*)(LOC - 4); // TODO: This should be the address to the jump location
+			sslot.codeloc = (u32*)(skipjump - 4); // TODO: This should be the address to the jump location
 			sslot.pc = pc; // TODO: This should be the pc of the next instruction
 		}
 		
 		if(last_instr) {
+			c_indirect_jump(pc);
 			break;
 		}
-	}
-	
-	if(require_prolog) {
-		c_indirect_jump(pc);
 	}
 	
 	if(has_skipslot) {
@@ -626,6 +701,8 @@ void trace(context* C) {
 	for(iw = data_beg; iw != pc; ++iw) {
 		C->blockmap[iw] = bindex;
 	}
+
+	++C->num_used_blocks;
 
 	bl->data_beg = data_beg;
 	bl->data_end = pc;
@@ -665,15 +742,32 @@ int main(int argc, char* argv[])
 	context_init(&C);
 	
 	parse(&C,
-		"SUB POP, PEEK\n"
-		"SUB PC, PC\n"
+		"SET PUSH, 15\n"
+		"JSR 3\n"
+		"SUB PC, 1\n"
+		
+		"SET A, PEEK\n"
+		"IFG A, 1\n"
+		"ADD PC, 2\n"
+			"SET A, 1\n"
+			"SET PC, POP\n"
+		// else
+			"SUB A, 2\n"
+			"SET PUSH, A\n"
+			"ADD A, 1\n"
+			"SET PUSH, A\n"
+			"JSR 3\n"
+			"SET B, A\n"
+			"JSR 3\n"
+			"ADD A, B\n"
+			"SET PC, POP\n"
 	);
 	
 	trace(&C);
-
-	printf("Common:\n");
 	
-	dump_asm(C.common_code, C.common_code_end);
+	//printf("Common:\n");
+	
+	//dump_asm(C.common_code, C.common_code_end);
 	
 	//((void(*)(context*))C.proc_indirect_jump_c)(&C);
 
