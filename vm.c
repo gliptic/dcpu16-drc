@@ -8,6 +8,7 @@
 #include "asm.h"
 #include "vm.h"
 #include "parser.h"
+#include "tl/treap.h"
 
 void dump_asm(u8* beg, u8* end);
 void invalidate_block(context* C, int bindex);
@@ -206,16 +207,6 @@ void invalidate_data_range(context* C, u16 from, u16 to) {
 		}
 	}
 }
-
-typedef struct label {
-	u32* patchloc;
-
-} label;
-
-typedef struct skipslot {
-	u32* codeloc;
-	u16 pc; // The instruction to skip
-} skipslot;
 
 
 
@@ -439,6 +430,18 @@ static u8* memory_guard(context* C, u8* LOC, i32 pc, mvalue mv) {
 	return LOC;
 }
 
+typedef struct label {
+	tl_treap_node node;
+	u32* patchloc;
+	u16  dest;
+} label;
+
+typedef struct skipslot {
+	u32* codeloc;
+	u16 pc; // The instruction to skip
+} skipslot;
+
+
 void trace(context* C) {
 	u16 pc = C->pc;
 	u16 iw, data_beg;
@@ -446,6 +449,7 @@ void trace(context* C) {
 	u8* code_beg;
 	skipslot sslot;
 	int has_skipslot = 0;
+	treap pending_labels;
 	
 	int bindex = 1 + (C->first_used_block + C->num_used_blocks) % 255;
 	block* bl = C->blocks + bindex;
@@ -462,6 +466,8 @@ void trace(context* C) {
 	assert(C->codeloc[pc] == 0);
 	
 	printf("Start tracing at %d\n", pc);
+	
+	tl_treap_init(&pending_labels);
 
 	while(1) {
 		u16 instr, op, next_instr;
@@ -482,10 +488,28 @@ void trace(context* C) {
 		// TODO: If instr is a known jump into the same block (so that last_instr == 0), check whether the actual destination
 		// requires_o.
 		
-		printf("<%d> OP: %d, instr_size = %d\n", pc, op, instr_size(instr));
+		// printf("<%d> OP: %d, instr_size = %d\n", pc, op, instr_size(instr));
+		
+		{
+			label *beg_label = NULL, *end_label = NULL;
+
+			tl_treap_smallest_where_g(beg_label, &pending_labels, label,node,
+				(pc >= other->dest));
+			if(beg_label) {
+				tl_treap_smallest_where_g(end_label, &pending_labels, label,node,
+					(pc < other->dest));
+
+				while(beg_label != end_label) {
+					label* cur = beg_label;
+					printf("Patching %p, parent = %p, %p...\n", cur, cur->node.parent, &tl_treap_null);
+					*cur->patchloc = LOC - ((u8*)cur->patchloc + 4);
+					tl_treap_next_node_g(&pending_labels, label,node, beg_label);
+					tl_treap_remove_g(&pending_labels, node, cur);
+				}
+			}
+		}
 		
 		C->codeloc[pc] = LOC - C->code_cache;
-
 		++pc;
 		
 		if(op != OP_EXT) {
@@ -527,12 +551,17 @@ void trace(context* C) {
 		}
 		
 		// Determine if this should be the last instruction in this block
-		/*
-		last_instr = (mvalue2 == MV(MV_REG, R_PC, 0) && !has_skipslot)
-		        || (LOC >= C->code_cache_end)
-			|| (C->codeloc[next_pc] != 0);*/
 		
-		last_instr = C->data[next_pc] == 0;
+		{
+			label* next_label = NULL;
+			tl_treap_find_g(next_label, &pending_labels, label,node, (pc > other->dest),(pc == other->dest));
+
+			last_instr = (mvalue2 == MV(MV_REG, R_PC, 0) && !has_skipslot && !next_label)
+					|| (LOC >= C->code_cache_end)
+					|| (C->codeloc[next_pc] != 0);
+		}
+		
+		// last_instr = C->data[next_pc] == 0;
 		need_o = (mvalue2 == MV(MV_REG, R_PC, 0)) || requires_o(C->data[next_pc]);
 
 		print_mvalues(mvalue0, mvalue1, mvalue2);
@@ -664,11 +693,22 @@ void trace(context* C) {
 
 			LOC = memory_guard(C, LOC, pc, mvalue2);
 		}
-		
+
 		if(mvalue2 == MV(MV_REG, R_PC, 0)) {
 			c_jmp(C->proc_indirect_jump);
+			
+			if(MV_M(mvalue0) == MV_IMM) {
+				label* l = malloc(sizeof(label));
+				
+				l->dest = MV_O_IMM(mvalue0);
+				l->patchloc = (u32*)(LOC - 4);
+				
+				tl_treap_init_node(&pending_labels, &l->node);
+				tl_treap_insert_dup_g(&pending_labels, label,node, l,
+					(node->dest > other->dest));
+			}
 		}
-
+		
 		// After instruction
 		if(has_skipslot) {
 			// Patch sslot.codeloc with offset to current
@@ -703,6 +743,8 @@ void trace(context* C) {
 	}
 
 	++C->num_used_blocks;
+	
+	printf("Traced [%d, %d)\n", data_beg, pc);
 
 	bl->data_beg = data_beg;
 	bl->data_end = pc;
@@ -716,6 +758,8 @@ void trace(context* C) {
 	}
 	
 	dump_asm(code_beg, LOC);
+	
+	tl_treap_clear_g(&pending_labels, label,node);
 }
 
 void dump_asm(u8* beg, u8* end) {

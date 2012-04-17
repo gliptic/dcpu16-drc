@@ -1,6 +1,8 @@
 #include "asm.h"
 
-#if WIN32
+#include "tl/platform.h"
+
+#if TL_WINDOWS
 
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
@@ -17,7 +19,7 @@ void* mcode_alloc(size_t sz, int prot) {
 	return p;
 }
 
-#else
+#elif TL_LINUX
 
 #include <sys/mman.h>
 
@@ -31,6 +33,13 @@ void* mcode_alloc(size_t sz, int prot) {
 
 void* mcode_alloc(size_t sz, int prot) {
 	void* p = mmap(NULL, sz, MCPROT_RWX, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+	return p;
+}
+
+#else
+
+void* mcode_alloc(size_t sz, int prot) {
+	void* p = malloc(sz);
 	return p;
 }
 

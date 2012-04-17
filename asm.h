@@ -370,6 +370,7 @@ typedef int8_t   i8;
 	} \
 } while(0)
 
+
 void* mcode_alloc(size_t sz, int prot);
 
 #endif // ASM_H
